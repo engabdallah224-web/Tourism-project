@@ -6,15 +6,22 @@ const multer  = require('multer');
 const path    = require('path');
 const fs      = require('fs');
 
-const serviceAccount = require('./serviceAccountKey.json');
+// Firebase Initialization - Using environment variables for Vercel
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT 
+  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT) 
+  : require('./serviceAccountKey.json');
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  storageBucket: "tourism-system-27c5f.appspot.com"
-});
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "tourism-system-27c5f.firebastorage.app"
+  });
+}
 
 const db  = admin.firestore();
+const bucket = admin.storage().bucket();
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
@@ -23,20 +30,9 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled Rejection:', reason?.message || reason);
 });
 
-// ─── Uploads: static serving + multer ────────────────────────────────────────
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
-app.use('/uploads', express.static(uploadsDir));
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename:    (req, file, cb) => {
-    const uid = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
-    cb(null, uid + path.extname(file.originalname));
-  },
-});
+// â- Uploads: Refactored for Firebase Storage (Vercel Support) â-
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
@@ -44,15 +40,48 @@ const upload = multer({
   },
 });
 
-app.post('/api/upload', upload.single('image'), (req, res) => {
+app.post('/api/upload', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image received.' });
-  const url = `http://localhost:5050/uploads/${req.file.filename}`;
-  res.json({ url, filename: req.file.filename });
+  
+  try {
+    const fileName = `uploads/${Date.now()}-${req.file.originanname}`;
+    const file = bucket.file(fileName);
+    
+    const stream = file.createWriteStream({
+      metadata: { contentType: req.file.mimetype },
+      public: true,
+      resumable: false
+    });
+
+    stream.on('error', (err) => {
+      console.error('Upload stream error:', err);
+      res.status(500).json({ error: 'Upload failed' });
+    });
+
+    stream.on('finish', () => {
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+      res.json({ url: publicUrl, filename: fileName });
+    });
+
+    stream.end(req.file.buffer);
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: 'Failed to upload image' });
+  }
 });
 
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
-// ─── SEEDING (Somali Packages) ────────────────────────────────────────────────
+// â- Helper â-
+const wrap = (fn) => async (req, res) => {
+  try {
+    await fn(req, res);
+  } catch (err) {
+    console.error(`[${req.method} ${req.path}]`, err.message);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+};
+
+// à- SEEDING (Somali Packages) à-
 const SOMALI_PACKAGES_SEED = [
   {
     PackageName: "Mogadishu Coastal Discovery",
@@ -96,52 +125,14 @@ const SOMALI_PACKAGES_SEED = [
     PackagePrice: 260,
     PackageType: "Business & Sea",
     PackageDetails: "Visit the major port city, enjoy the mountain views of Al-Madow and the warm GULF of Aden.",
-    PackageImage: "https://images.unsplash.com/photo-1559128010-7c1ad6e1b6a5?auto=format&fit=crop&w=800&q=80",
-    PackageFetures: "Port Tour, Al-Madow Mountains, Seafront Hotels"
-  },
-  {
-    PackageName: "Berbera Ancient Port",
-    PackageLocation: "Saaxil, Berbera",
-    PackagePrice: 320,
-    PackageType: "History & Diving",
-    PackageDetails: "Explore the Ottoman architecture and some of the best diving spots in the Red Sea.",
-    PackageImage: "https://images.unsplash.com/photo-1510017803434-a899398421b3?auto=format&fit=crop&w=800&q=80",
-    PackageFetures: "Old Town, Diving, Deep Sea Fishing, Port Access"
-  },
-  {
-    PackageName: "Baidoa Grain City",
-    PackageLocation: "Bay, Baidoa",
-    PackagePrice: 180,
-    PackageType: "Agricultural",
-    PackageDetails: "Experience the agricultural heartland of Somalia and the famous Isha River.",
-    PackageImage: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80",
-    PackageFetures: "Isha River, Farm Tours, Traditional Dance"
-  },
-  {
-    PackageName: "Borama Mountain Breeze",
-    PackageLocation: "Awdal, Borama",
-    PackagePrice: 210,
-    PackageType: "Nature",
-    PackageDetails: "Enjoy the cool mountain climate and the intellectual atmosphere of the city of education.",
-    PackageImage: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80",
-    PackageFetures: "Amoud University, Mountain Hiking, Cool Climate"
-  },
-  {
-    PackageName: "Beledweyne River Tour",
-    PackageLocation: "Hiran, Beledweyne",
-    PackagePrice: 190,
-    PackageType: "River Safari",
-    PackageDetails: "See the majestic Shabelle River and the bridges that connect the city.",
-    PackageImage: "https://images.unsplash.com/photo-1437719417032-8595fd9e9dc6?auto=format&fit=crop&w=800&q=80",
-    PackageFetures: "River Boat, Bridge Tours, Local Cuisine"
-  },
-  {
-    PackageName: "Galkacyo Twin City",
-    PackageLocation: "Mudug, Galkacyo",
-    PackagePrice: 200,
-    PackageType: "Unity Tour",
-    PackageDetails: "Experience the unique city that bridges two states, a symbol of commerce and peace.",
-    PackageImage: "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=800&q=80",
+    PackageR[age: (ÎËÚ[XYÙ\Ë[Ü\ÚÛÛKÜÝËLMMNLLLLLMØÌXY
+LXMOØ]]ÏYÜX]	]XÜÜ	ÏN	ONXÚØYÙQ]\\ÎÜÝ\[SXYÝÈ[Ý[Z[ËÙXYÛÝ[ÈKÂXÚØYÙS[YN\\H[ÚY[ÜXÚØYÙSØØ][ÛØX^[\\HXÚØYÙTXÙNÌXÚØYÙU\N\ÝÜH	][ÈXÚØYÙQ]Z[Î^ÜHHÝÛX[\Ú]XÝ\H[ÛÛYHÙH\Ý][ÈÜÝÈ[HYÙXKXÚØYÙR[XYÙNÎËÚ[XYÙ\Ë[Ü\ÚÛÛKÜÝËLMLLMÎÍÍXNNLÎN
+XÏØ]]ÏYÜX]	]XÜÜ	ÏN	ONXÚØYÙQ]\\ÎÛÝÛ][ËY\ÙXH\Ú[ËÜXØÙ\ÜÈKÂXÚØYÙS[YNZYØHÜZ[Ú]HXÚØYÙSØØ][Û^KZYØHXÚØYÙTXÙNNXÚØYÙU\NYÜXÝ[\[XÚØYÙQ]Z[Î^\Y[ÙHHYÜXÝ[\[X\[ÙÛÛX[XH[H[[Ý\È\ÚH]\XÚØYÙR[XYÙNÎËÚ[XYÙ\Ë[Ü\ÚÛÛKÜÝËLM
+ÍNLËYY
+ÌØØ]]ÏYÜX]	]XÜÜ	ÏN	ONXÚØYÙQ]\\Î\ÚH]\\HÝ\ËY][Û[[ÙHKÂXÚØYÙS[YNÜ[XH[Ý[Z[Y^HXÚØYÙSØØ][Û]Ù[Ü[XHXÚØYÙTXÙNLXÚØYÙU\N]\HXÚØYÙQ]Z[Î[ÞHHÛÛÛ[Ý[Z[Û[X]H[H[[XÝX[][ÜÜ\HÙHÚ]HÙYXØ][ÛXÚØYÙTØYÙN
+&GG3¢òöÖvW2çVç7Æ6æ6öÒ÷÷FòÓCcC##sS#2ÖfVCc#&fc&36#öWFóÖf÷&ÖBffCÖ7&÷gsÓgÓ"À¢6¶vTfWGW&W3¢$Ö÷VBVæfW'6GÂÖ÷VçFâ¶ærÂ6ööÂ6ÆÖFR ¢ÒÀ¢°¢6¶vTæÖS¢$&VÆVGvWæR&fW"F÷W""À¢6¶vTÆö6Föã¢$&âÂ&VÆVGvWæR"À¢6¶vU&6S¢À¢6¶vUGS¢%&fW"6f&"À¢6¶vTFWFÇ3¢%6VRFRÖ¦W7F26&VÆÆR&fW"æBFR'&FvW2FB6öææV7BFR6Gâ"À¢6¶vU%¶vS¢¡ÑÑÁÌè¼½¥µÌ¹Õ¹ÍÁ±Í ¹½´½Á¡½Ñ¼´ÄÐÌÜÜÄäÐÄÜÀÌÈ´àÔäÕååØýÕÑ¼õ½ÉµÐ¥ÐõÉ½ÀÜôàÀÀÄôàÀ°(A­ÑÕÉÌèI¥ÙÈ	½Ð°	É¥Q½ÕÉÌ°1½°
+Õ¥Í¥¹(ô°(ì(A­9µè±­å¼QÝ¥¸
+¥Ñä°(A­1½Ñ¥½¸è5ÕÕ°±­å¼°(A­AÉ¥èÈÀÀ°(A­QåÁèU¹¥ÑäQ½ÕÈ°(A­Ñ¥±ÌèáÁÉ¥¹Ñ¡Õ¹¥ÅÕ¥ÑäÑ¡ÐÉ¥ÌÑÝ¼ÍÑÑÌ°Íåµ½°½½µµÉ¹Á¸°(A­Imè¢https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=800&q=80",
     PackageFetures: "Commercial Hub, Airport Tour, Peace Center"
   },
   {
@@ -155,421 +146,152 @@ const SOMALI_PACKAGES_SEED = [
   },
   {
     PackageName: "Dhusamareb Peace Garden",
-    PackageLocation: "Galguduud, Dhusamareb",
-    PackagePrice: 160,
-    PackageType: "Peace & Politics",
-    PackageDetails: "Visit the heart of Galmudug and see where history is being made.",
-    PackageImage: "https://images.unsplash.com/photo-1517048676732-d65bc937f952?auto=format&fit=crop&w=800&q=80",
-    PackageFetures: "Regional HQ, Community Markets, Cultural Talks"
+const express = require('express');
+const admin   = require('firebase-admin');
+const cors    = require('cors');
+const multer  = require('multer');
+const path    = require('path');
+const fs      = require('fs');
+
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT 
+  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT) 
+  : require('./serviceAccountKey.json');
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "tourism-system-27c5f.firebasestorage.app"
+  });
+}
+
+const db  = admin.firestore();
+const bucket = admin.storage().bucket();
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason?.message || reason);
+});
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+app.post('/api/upload', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No image received.' });
+  try {
+    const fileName = `uploads/${Date.now()}-${req.file.originalname}`;
+    const file = bucket.file(fileName);
+    const stream = file.createWriteStream({
+      metadata: { contentType: req.file.mimetype },
+      public: true,
+      resumable: false
+    });
+    stream.on('error', (err) => {
+      console.error('Upload error:', err);
+      res.status(500).json({ error: 'Upload failed' });
+    });
+    stream.on('finish', () => {
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+      res.json({ url: publicUrl, filename: fileName });
+    });
+    stream.end(req.file.buffer);
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: 'Failed to upload image' });
   }
-];
+});
 
 const wrap = (fn) => async (req, res) => {
-  try {
-    await fn(req, res);
-  } catch (err) {
-    console.error(`[${req.method} ${req.path}]`, err.message);
-    res.status(500).json({ error: 'Server error: ' + err.message });
-  }
+  try { await fn(req, res); } 
+  catch (err) { console.error(`[${req.method} ${req.path}]`, err.message); res.status(500).json({ error: 'Server error' }); }
 };
 
-// ─── SEEDING ──────────────────────────────────────────────────────────────────
-app.get('/api/admin/seed', wrap(async (req, res) => {
-  console.log('--- Starting Somalia Seeding ---');
-  const snapshot = await db.collection('packages').get();
-  const batch = db.batch();
-  snapshot.docs.forEach(doc => batch.delete(doc.ref));
-  await batch.commit();
-  console.log('Deleted old packages.');
-  for (const pkg of SOMALI_PACKAGES_SEED) {
-    await db.collection('packages').add({
-      ...pkg,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-  }
-  console.log('Seeding complete.');
-  res.json({ message: 'Database successfully updated with Somali packages!' });
-}));
-
-// ─── PACKAGES ─────────────────────────────────────────────────────────────────
 app.get('/api/packages', wrap(async (req, res) => {
   const snapshot = await db.collection('packages').get();
-  const packages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), PackageId: doc.id }));
-  res.json(packages);
+  res.json(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), PackageId: doc.id })));
 }));
 
 app.post('/api/packages', wrap(async (req, res) => {
-  const docRef = await db.collection('packages').add({
-    ...req.body,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-  res.json({ id: docRef.id, message: 'Package created' });
+  const docRef = await db.collection('packages').add({ ...req.body, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+  res.json({ id: docRef.id });
 }));
 
 app.get('/api/packages/:id', wrap(async (req, res) => {
   const doc = await db.collection('packages').doc(req.params.id).get();
-  if (!doc.exists) return res.status(404).json({ error: 'Package not found' });
   res.json({ package: { id: doc.id, ...doc.data() } });
 }));
 
 app.put('/api/packages/:id', wrap(async (req, res) => {
   await db.collection('packages').doc(req.params.id).update(req.body);
-  res.json({ message: 'Package updated' });
+  res.json({ message: 'Updated' });
 }));
 
 app.delete('/api/packages/:id', wrap(async (req, res) => {
   await db.collection('packages').doc(req.params.id).delete();
-  res.json({ message: 'Package deleted' });
+  res.json({ message: 'Deleted' });
 }));
 
-// ─── BOOKINGS ─────────────────────────────────────────────────────────────────
 app.post('/api/bookings', wrap(async (req, res) => {
-  const data = { 
-    ...req.body, 
-    // Ensure UserEmail is capitalized for consistent filtering
-    UserEmail: req.body.UserEmail || req.body.userEmail || req.body.email,
-    status: 0, 
-    createdAt: admin.firestore.FieldValue.serverTimestamp() 
-  };
+  const data = { ...req.body, status: 0, createdAt: admin.firestore.FieldValue.serverTimestamp() };
   const docRef = await db.collection('bookings').add(data);
-  res.json({ id: docRef.id, message: 'Booking created' });
+  res.json({ id: docRef.id });
 }));
-
-// Helper to normalize booking data
-const normalizeBooking = (doc) => {
-  const d = doc.data();
-  return {
-    id:              doc.id,
-    BookingId:       doc.id,
-    UserEmail:       d.UserEmail    || d.userEmail    || d.email       || '—',
-    UserName:        d.UserName     || d.userName     || d.name        || '—',
-    PackageName:     d.PackageName  || d.packageName  || d.package     || '—',
-    PackageLocation: d.PackageLocation || d.packageLocation            || '—',
-    PackagePrice:    d.PackagePrice || d.packagePrice || 0,
-    PackageType:     d.PackageType  || d.packageType  || '—',
-    FromDate:        d.FromDate     || d.fromdate     || d.from        || '—',
-    ToDate:          d.ToDate       || d.todate       || d.to          || '—',
-    Comment:         d.Comment      || d.comment      || '',
-    status:          d.status !== undefined ? Number(d.status) : 0,
-    packageId:       d.packageId    || '',
-    createdAt:       d.createdAt    || null,
-  };
-};
 
 app.get('/api/bookings', wrap(async (req, res) => {
   const snapshot = await db.collection('bookings').get();
-  const bookings = snapshot.docs.map(normalizeBooking);
-  res.json({ bookings });
+  res.json({ bookings: snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) });
 }));
 
 app.get('/api/bookings/user/:email', wrap(async (req, res) => {
   const email = req.params.email;
-  // Try both capitalized and lowercase field names for older data compatibility
-  const snapshot1 = await db.collection('bookings').where('UserEmail', '==', email).get();
-  const snapshot2 = await db.collection('bookings').where('userEmail', '==', email).get();
-  const snapshot3 = await db.collection('bookings').where('email', '==', email).get();
-  
-  // Combine unique results
-  const seen = new Set();
-  const bookings = [];
-  [snapshot1, snapshot2, snapshot3].forEach(snap => {
-    snap.docs.forEach(doc => {
-      if (!seen.has(doc.id)) {
-        seen.add(doc.id);
-        bookings.push(normalizeBooking(doc));
-      }
-    });
-  });
-  
-  res.json({ bookings });
+  const snap = await db.collection('bookings').where('UserEmail', '==', email).get();
+  res.json({ bookings: snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) });
 }));
 
 app.put('/api/bookings/:id/confirm', wrap(async (req, res) => {
   await db.collection('bookings').doc(req.params.id).update({ status: 1 });
-  res.json({ message: 'Booking confirmed' });
+  res.json({ message: 'Confirmed' });
 }));
 
 app.put('/api/bookings/:id/cancel', wrap(async (req, res) => {
   await db.collection('bookings').doc(req.params.id).update({ status: 2 });
-  res.json({ message: 'Booking cancelled' });
-}));
-
-app.put('/api/bookings/:id', wrap(async (req, res) => {
-  await db.collection('bookings').doc(req.params.id).update(req.body);
-  res.json({ message: 'Booking updated' });
+  res.json({ message: 'Cancelled' });
 }));
 
 app.delete('/api/bookings/:id', wrap(async (req, res) => {
   await db.collection('bookings').doc(req.params.id).delete();
-  res.json({ message: 'Booking deleted' });
+  res.json({ message: 'Deleted' });
 }));
 
-// ─── USER DASHBOARD ───────────────────────────────────────────────────────────
-app.get('/api/user/dashboard/:email', wrap(async (req, res) => {
-  const email = req.params.email;
-
-  // Fetch everything in parallel
-  const [bookingsSnap, enquiriesSnap, issuesSnap] = await Promise.all([
-    db.collection('bookings').where('UserEmail', '==', email).get(),
-    db.collection('enquiries').where('UserEmail', '==', email).get(),
-    db.collection('issues').where('UserEmail', '==', email).get()
-  ]);
-
-  const bData = bookingsSnap.docs.map(doc => ({ id: doc.id, ...doc.data(), type: 'booking' }));
-  const eData = enquiriesSnap.docs.map(doc => ({ id: doc.id, ...doc.data(), type: 'enquiry' }));
-  const iData = issuesSnap.docs.map(doc => ({ id: doc.id, ...doc.data(), type: 'issue' }));
-
-  // Aggregate stats
-  const stats = {
-    totalBookings:     bData.length,
-    confirmedBookings: bData.filter(b => b.status == 1).length,
-    pendingBookings:   bData.filter(b => b.status == 0).length,
-    totalEnquiries:    eData.length,
-    totalIssues:       iData.length,
-    openIssues:        iData.filter(i => i.status == 0).length,
-  };
-
-  // Combine and sort recent activity
-  const allActivity = [...bData, ...eData, ...iData]
-    .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
-    .slice(0, 5);
-
-  res.json({ stats, recentActivity: allActivity });
-}));
-
-// ─── ENQUIRIES ────────────────────────────────────────────────────────────────
-app.get('/api/enquiries', wrap(async (req, res) => {
-  const snapshot = await db.collection('enquiries').get();
-  const enquiries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  res.json({ enquiries });
-}));
-
-app.post('/api/enquiry', wrap(async (req, res) => {
-  await db.collection('enquiries').add({
-    ...req.body,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-  res.json({ message: 'Enquiry sent' });
-}));
-
-app.delete('/api/enquiries/:id', wrap(async (req, res) => {
-  await db.collection('enquiries').doc(req.params.id).delete();
-  res.json({ message: 'Enquiry deleted' });
-}));
-
-app.put('/api/enquiries/:id/reply', wrap(async (req, res) => {
-  const { reply } = req.body;
-  await db.collection('enquiries').doc(req.params.id).update({
-    AdminReply: reply,
-    status: 'resolved',
-    repliedAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-  res.json({ message: 'Reply sent and enquiry resolved' });
-}));
-
-app.put('/api/enquiries/:id', wrap(async (req, res) => {
-  await db.collection('enquiries').doc(req.params.id).update(req.body);
-  res.json({ message: 'Enquiry updated' });
-}));
-
-// ─── SUPPORT ISSUES ───────────────────────────────────────────────────────────
-app.get('/api/issues', wrap(async (req, res) => {
-  const snapshot = await db.collection('issues').get();
-  const issues = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  res.json({ issues });
-}));
-
-app.post('/api/issues', wrap(async (req, res) => {
-  await db.collection('issues').add({
-    ...req.body,
-    Status: 0,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-  res.json({ message: 'Issue created' });
-}));
-
-app.put('/api/issues/:id', wrap(async (req, res) => {
-  const { status, remarks } = req.body;
-  await db.collection('issues').doc(req.params.id).update({
-    Status: status,
-    AdminRemarks: remarks,
-  });
-  res.json({ message: 'Issue updated' });
-}));
-
-app.delete('/api/issues/:id', wrap(async (req, res) => {
-  await db.collection('issues').doc(req.params.id).delete();
-  res.json({ message: 'Issue deleted' });
-}));
-
-// ─── USERS ────────────────────────────────────────────────────────────────────
-app.get('/api/users', wrap(async (req, res) => {
-  const snapshot = await db.collection('users').get();
-  const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  res.json({ users });
-}));
-
-app.delete('/api/users/:id', wrap(async (req, res) => {
-  await db.collection('users').doc(req.params.id).delete();
-  res.json({ message: 'User deleted' });
-}));
-
-// ─── PROFILE ──────────────────────────────────────────────────────────────────
-app.get('/api/profile/:email', wrap(async (req, res) => {
-  const snapshot = await db.collection('users')
-    .where('EmailId', '==', req.params.email)
-    .limit(1)
-    .get();
-  if (snapshot.empty) return res.status(404).json({ error: 'User not found' });
-  const doc = snapshot.docs[0];
-  res.json({ user: { id: doc.id, ...doc.data() } });
-}));
-
-app.put('/api/profile/:email', wrap(async (req, res) => {
-  const snapshot = await db.collection('users')
-    .where('EmailId', '==', req.params.email)
-    .limit(1)
-    .get();
-  if (snapshot.empty) return res.status(404).json({ error: 'User not found' });
-  await snapshot.docs[0].ref.update(req.body);
-  res.json({ message: 'Profile updated' });
-}));
-
-app.put('/api/change-password', wrap(async (req, res) => {
-  const { email, oldPassword, newPassword } = req.body;
-  const snapshot = await db.collection('users')
-    .where('EmailId', '==', email)
-    .limit(1)
-    .get();
-  if (snapshot.empty) return res.status(404).json({ error: 'User not found' });
-  const userData = snapshot.docs[0].data();
-  if (userData.Password !== oldPassword) return res.status(401).json({ error: 'Old password is incorrect' });
-  await snapshot.docs[0].ref.update({ Password: newPassword });
-  res.json({ message: 'Password updated successfully' });
-}));
-
-// ─── ADMIN AUTH ───────────────────────────────────────────────────────────────
 app.post('/api/admin/login', (req, res) => {
-  const { email, username, password } = req.body;
-  const loginEmail = (email || username || '').trim();
-  const loginPass  = (password || '').trim();
-
-  const ADMIN_USER = (process.env.ADMIN_USERNAME || 'admin').trim();
-  const ADMIN_PASS = (process.env.ADMIN_PASSWORD || 'Test@123').trim();
-
-  if (!loginEmail || !loginPass) {
-    return res.status(400).json({ error: 'Email and password are required.' });
+  const { email, password } = req.body;
+  if (email === (process.env.ADMIN_USERNAME || 'admin') && password === (process.env.ADMIN_PASSWORD || 'Test@123')) {
+    return res.json({ token: 'admin-token', admin: { email } });
   }
-
-  if (loginEmail === ADMIN_USER && loginPass === ADMIN_PASS) {
-    return res.json({
-      token: 'admin-token',
-      admin: {
-        id: 1,
-        name: 'Admin',
-        email: loginEmail,
-        AdminUsername: loginEmail,
-      },
-    });
-  }
-
-  return res.status(401).json({ error: 'Invalid admin credentials.' });
+  res.status(401).json({ error: 'Invalid' });
 });
 
-app.put('/api/admin/change-password', (req, res) => {
-  const { oldPassword, newPassword } = req.body;
-  if (oldPassword !== 'Test@123') return res.status(401).json({ error: 'Old password is incorrect.' });
-  // In production store the new password in Firestore admin collection
-  res.json({ message: 'Admin password updated.' });
-});
-
-// ─── DASHBOARD ────────────────────────────────────────────────────────────────
-app.get('/api/admin/dashboard', wrap(async (req, res) => {
-  const [u, p, b, e, i] = await Promise.all([
-    db.collection('users').get(),
-    db.collection('packages').get(),
-    db.collection('bookings').get(),
-    db.collection('enquiries').get(),
-    db.collection('issues').get(),
-  ]);
-
-  const bookingDocs      = b.docs.map(doc => doc.data());
-  const pendingBookings   = bookingDocs.filter(d => String(d.status) === '0').length;
-  const confirmedBookings = bookingDocs.filter(d => String(d.status) === '1').length;
-  const cancelledBookings = bookingDocs.filter(d => String(d.status) === '2').length;
-
-  const issueDocs      = i.docs.map(doc => doc.data());
-  const openIssues     = issueDocs.filter(d => String(d.Status) === '0').length;
-  const resolvedIssues = issueDocs.filter(d => String(d.Status) === '1').length;
-
-  res.json({
-    users: u.size,
-    packages: p.size,
-    bookings: b.size,
-    pendingBookings,
-    confirmedBookings,
-    cancelledBookings,
-    enquiries: e.size,
-    issues: i.size,
-    openIssues,
-    resolvedIssues,
-  });
-}));
-
-// ─── USER LOGIN ───────────────────────────────────────────────────────────────
 app.post('/api/login', wrap(async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
-
-  const snapshot = await db.collection('users')
-    .where('EmailId', '==', email)
-    .limit(1)
-    .get();
-
-  if (snapshot.empty) return res.status(401).json({ error: 'No account found with this email.' });
-
-  const userDoc  = snapshot.docs[0];
-  const userData = userDoc.data();
-
-  if (userData.Password !== password) return res.status(401).json({ error: 'Incorrect password.' });
-
-  res.json({
-    token: `token-${userDoc.id}`,
-    user: {
-      UserId:     userDoc.id,
-      UserName:   userData.FullName,
-      UserEmail:  userData.EmailId,
-      UserMobile: userData.MobileNumber,
-    },
-  });
+  const snap = await db.collection('users').where('EmailId', '==', email).limit(1).get();
+  if (snap.empty || snap.docs[0].data().Password !== password) return res.status(401).json({ error: 'Invalid' });
+  const user = snap.docs[0];
+  res.json({ token: `token-${user.id}`, user: { UserId: user.id, UserName: user.data().FullName, UserEmail: user.data().EmailId } });
 }));
 
-// ─── USER REGISTER ────────────────────────────────────────────────────────────
 app.post('/api/register', wrap(async (req, res) => {
-  const { name, email, mobile, password } = req.body;
-  if (!name || !email || !mobile || !password) return res.status(400).json({ error: 'All fields are required.' });
-
-  const existing = await db.collection('users')
-    .where('EmailId', '==', email)
-    .limit(1)
-    .get();
-
-  if (!existing.empty) return res.status(409).json({ error: 'An account with this email already exists.' });
-
-  const docRef = await db.collection('users').add({
-    FullName:     name,
-    EmailId:      email,
-    MobileNumber: mobile,
-    Password:     password,
-    createdAt:    admin.firestore.FieldValue.serverTimestamp(),
-  });
-
-  res.json({
-    message: 'Account created successfully.',
-    user: { UserId: docRef.id, UserName: name, UserEmail: email },
-  });
+  const { name, email, password } = req.body;
+  const docRef = await db.collection('users').add({ FullName: name, EmailId: email, Password: password, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+  res.json({ message: 'Success', user: { UserId: docRef.id, UserName: name, UserEmail: email } });
 }));
 
-// ─── START ────────────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 5050;
-app.listen(PORT, () => console.log(`✅ Backend running on port ${PORT}`));
+module.exports = app;
+
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 5050;
+  app.listen(PORT, () => console.log(`✅ Local port ${PORT}`));
+                   }
