@@ -6,8 +6,14 @@ const multer = require('multer');
 
 let serviceAccount = null;
 try {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT.trim());
+  let raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (raw) {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      serviceAccount = JSON.parse(match[0]);
+    } else {
+      serviceAccount = JSON.parse(raw);
+    }
   }
 } catch (e) {
   console.error('Firebase Auth Parse Error:', e.message);
@@ -49,7 +55,7 @@ const wrap = (fn) => async (req, res) => {
 app.get('/api/health', (req, res) => res.json({ 
   status: 'ok', 
   firebase: !!db, 
-  hasEnv: !!process.env.FIREBASE_SERVICE_ACCOUNT 
+  hasEnv: !!process.env.FIREBASE_SERVICE_ACCOUNT
 }));
 
 app.post('/api/upload', upload.single('image'), async (req, res) => {
@@ -112,4 +118,4 @@ module.exports = app;
 
 if (process.env.NODE_ENV !== 'production') {
   app.listen(5050, () => console.log('Local port 5050'));
-}
+    }
